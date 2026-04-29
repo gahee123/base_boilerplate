@@ -1,0 +1,70 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app-deployment
+  namespace: fastapi-boilerplate
+  labels:
+    app: fastapi-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: fastapi-app
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: fastapi-app
+    spec:
+      # 보안: non-root 사용자 실행 보장 (Dockerfile 설정과 일치)
+      securityContext:
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+
+      containers:
+      - name: fastapi-container
+        image: fastapi-app:latest # 로컬 배포용 이미지 명칭
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8000
+        
+        envFrom:
+        - configMapRef:
+            name: app-config
+        - secretRef:
+            name: app-secrets # 별도 생성 필요 (TASK-043)
+            
+        resources:
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+          requests:
+            cpu: "200m"
+            memory: "256Mi"
+            
+        # 헬스 체크
+        livenessProbe:
+          httpGet:
+            path: /healthz/live
+            port: 8000
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        readinessProbe:
+          httpGet:
+            path: /healthz/ready
+            port: 8000
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          
+        volumeMounts:
+        - name: log-volume
+          mountPath: /code/logs
+          
+      volumes:
+      - name: log-volume
+        emptyDir: {} # 로그 통합 솔루션이 없을 경우 임시 볼륨 사용

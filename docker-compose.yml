@@ -1,0 +1,154 @@
+services:
+  # ── FastAPI 앱 ──────────────────────────────────────────────
+  app:
+    build:
+      context: .
+      target: dev
+    container_name: fastapi-app
+    ports:
+      - "${APP_PORT:-8000}:8000"
+    env_file: .env
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./app:/code/app        # 개발 시 핫리로드
+      - ./tests:/code/tests    # 테스트 코드 핫리로드
+      - ./alembic:/code/alembic
+      - ./alembic.ini:/code/alembic.ini
+      - ./pyproject.toml:/code/pyproject.toml
+      - ./logs:/code/logs      # 로그 파일 호스트에서 확인
+    environment:
+      DATABASE_URL: "postgresql+asyncpg://${DB_USER:-postgres}:${DB_PASSWORD:-postgres}@db:5432/${DB_NAME:-app_db}"
+      REDIS_URL: "redis://redis:6379/0"
+      LOG_FILE_PATH: "logs/app.log"
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+      - "localhost:host-gateway"
+    restart: unless-stopped
+
+  # ── Arq Worker ──────────────────────────────────────────────
+  worker:
+    build:
+      context: .
+      target: dev
+    container_name: fastapi-worker
+    env_file: .env
+    environment:
+      DATABASE_URL: "postgresql+asyncpg://${DB_USER:-postgres}:${DB_PASSWORD:-postgres}@db:5432/${DB_NAME:-app_db}"
+      REDIS_URL: "redis://redis:6379/0"
+      LOG_FILE_PATH: "logs/worker.log"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./app:/code/app
+      - ./pyproject.toml:/code/pyproject.toml
+      - ./logs:/code/logs
+    command: arq app.core.worker.WorkerSettings
+    restart: unless-stopped
+
+  # ── PostgreSQL ──────────────────────────────────────────────
+  db:
+    image: postgres:15-alpine
+    container_name: fastapi-db
+    environment:
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+      POSTGRES_DB: ${DB_NAME:-app_db}
+      KEYCLOAK_DB_NAME: keycloak
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/init-multiple-databases.sh:/docker-entrypoint-initdb.d/init-multiple-databases.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ── Redis ───────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: fastapi-redis
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ── Logging Stack ───────────────────────────────────────────
+  loki:
+    image: grafana/loki:2.9.0
+    container_name: fastapi-loki
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./docker/logging/loki-config.yml:/etc/loki/local-config.yaml:ro
+    command: -config.file=/etc/loki/local-config.yaml
+    restart: unless-stopped
+
+  promtail:
+    image: grafana/promtail:2.9.0
+    container_name: fastapi-promtail
+    volumes:
+      - ./logs:/var/log/app
+      - ./docker/logging/promtail-config.yml:/etc/promtail/config.yml:ro
+    command: -config.file=/etc/promtail/config.yml
+    depends_on:
+      - loki
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:10.2.0
+    container_name: fastapi-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+    volumes:
+      - ./docker/logging/grafana-datasources.yml:/etc/grafana/provisioning/datasources/ds.yaml:ro
+    depends_on:
+      - loki
+    restart: unless-stopped
+
+  # ── Keycloak SSO ────────────────────────────────────────────
+  keycloak:
+    image: quay.io/keycloak/keycloak:24.0.2
+    container_name: fastapi-keycloak
+    command: start-dev --http-relative-path /auth
+    environment:
+      KC_DB: postgres
+      KC_DB_URL_HOST: db
+      KC_DB_URL_DATABASE: keycloak
+      KC_DB_USERNAME: ${DB_USER:-postgres}
+      KC_DB_PASSWORD: ${DB_PASSWORD:-postgres}
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+      KC_HEALTH_ENABLED: "true"
+      KC_METRICS_ENABLED: "true"
+      KC_HOSTNAME_STRICT: "false"
+      KC_HOSTNAME_STRICT_BACKCHANNEL: "false"
+    ports:
+      - "8081:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:

@@ -1,0 +1,25 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: fastapi-boilerplate
+data:
+  # Application Settings
+  APP_NAME: "fastapi-prod"
+  APP_ENV: "production"
+  APP_DEBUG: "false"
+  APP_HOST: "0.0.0.0"
+  APP_PORT: "8000"
+  
+  # Database & Redis (Hostnames match K8s services)
+  DATABASE_URL: "postgresql+asyncpg://postgres:postgres@db-service:5432/app_db"
+  REDIS_URL: "redis://redis-service:6379/0"
+  
+  # Logging
+  LOG_LEVEL: "INFO"
+  LOG_FORMAT: "json"
+  LOG_FILE_PATH: "/code/logs/app.log"
+  
+  # Business Logic
+  RATE_LIMIT_MAX_REQUESTS: "100"
+  RATE_LIMIT_WINDOW_SECONDS: "60"

@@ -1,0 +1,13 @@
+# Alembic
+__pycache__
+*.pyc
+*.pyo
+.env
+.venv
+.mypy_cache
+.ruff_cache
+.pytest_cache
+*.egg-info
+dist
+build
+logs

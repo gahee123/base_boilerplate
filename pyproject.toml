@@ -1,0 +1,70 @@
+[tool.poetry]
+name = "fastapi-boilerplate"
+version = "0.1.0"
+description = "Production-ready FastAPI backend boilerplate"
+authors = ["Dev Team"]
+readme = "README.md"
+package-mode = false
+
+[tool.poetry.dependencies]
+python = "^3.11"
+
+# Core
+fastapi = "^0.115.0"
+uvicorn = { version = "^0.34.0", extras = ["standard"] }
+pydantic = "^2.10.0"
+pydantic-settings = "^2.7.0"
+email-validator = "^2.2.0"
+
+# Database
+sqlalchemy = { version = "^2.0.36", extras = ["asyncio"] }
+asyncpg = "^0.30.0"
+psycopg2-binary = "^2.9.9"
+alembic = "^1.14.0"
+
+# Auth
+pyjwt = "^2.10.0"
+passlib = { version = "^1.7.4", extras = ["bcrypt"] }
+bcrypt = "3.2.2"
+python-multipart = "^0.0.18"
+
+# Redis
+redis = "^5.2.0"
+arq = "^0.26.0"
+
+# Utils
+structlog = "^24.4.0"
+python-dotenv = "^1.0.1"
+sentry-sdk = {extras = ["fastapi"], version = "^2.0.0"}
+httpx = "^0.28.0"
+urllib3 = "^2.2.0"
+cryptography = "^46.0.7"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.3.0"
+pytest-asyncio = "^0.24.0"
+coverage = "^7.6.0"
+ruff = "^0.8.0"
+mypy = "^1.13.0"
+respx = "^0.23.1"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+ignore_missing_imports = true
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "N", "UP", "B", "A", "SIM"]
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

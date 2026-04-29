@@ -1,0 +1,44 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker-deployment
+  namespace: fastapi-boilerplate
+  labels:
+    app: fastapi-worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: fastapi-worker
+  template:
+    metadata:
+      labels:
+        app: fastapi-worker
+    spec:
+      securityContext:
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+      containers:
+      - name: worker-container
+        image: fastapi-app:latest
+        imagePullPolicy: IfNotPresent
+        command: ["arq", "app.core.worker.WorkerSettings"]
+        envFrom:
+        - configMapRef:
+            name: app-config
+        - secretRef:
+            name: app-secrets
+        resources:
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+          requests:
+            cpu: "200m"
+            memory: "256Mi"
+        volumeMounts:
+        - name: log-volume
+          mountPath: /code/logs
+      volumes:
+      - name: log-volume
+        emptyDir: {}

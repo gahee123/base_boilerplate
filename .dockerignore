@@ -1,0 +1,22 @@
+__pycache__
+*.pyc
+*.pyo
+.env
+.git
+.gitignore
+.venv
+.mypy_cache
+.ruff_cache
+.pytest_cache
+*.egg-info
+dist
+build
+docker-compose*.yml
+Dockerfile
+README.md
+# tests (dev stage에서 사용)
+docs
+.agents
+alembic/versions/*
+!alembic/versions/.gitkeep
+logs

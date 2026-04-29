@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "fastapi-boilerplate.fullname" . }}-config
+  labels:
+    {{- include "fastapi-boilerplate.labels" . | nindent 4 }}
+data:
+  APP_ENV: {{ .Values.env.APP_ENV | quote }}
+  APP_DEBUG: {{ .Values.env.APP_DEBUG | quote }}
+  LOG_LEVEL: {{ .Values.env.LOG_LEVEL | quote }}
+  LOG_FORMAT: {{ .Values.env.LOG_FORMAT | quote }}
+  DATABASE_URL: {{ .Values.env.DATABASE_URL | quote }}
+  REDIS_URL: {{ .Values.env.REDIS_URL | quote }}
