@@ -244,8 +244,10 @@ async def refresh_token(
         )
 
         return TokenResponse(access_token=tokens["access_token"])
+    except jwt.ExpiredSignatureError:
+        raise Unauthorized("Refresh Token 만료", error_code="AUTH_011")
     except jwt.PyJWTError:
-        raise Unauthorized("유효하지 않거나 만료된 리프레시 토큰입니다.")
+        raise Unauthorized("유효하지 않은 리프레시 토큰입니다.")
 
 
 @router.get("/me", response_model=UserResponse)

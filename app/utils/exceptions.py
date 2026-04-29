@@ -31,8 +31,9 @@ class AppException(Exception):
     error_code: str = "INTERNAL_ERROR"
     message: str = "내부 서버 오류가 발생했습니다."
 
-    def __init__(self, message: str | None = None, detail: str | None = None) -> None:
+    def __init__(self, message: str | None = None, detail: str | None = None, error_code: str | None = None) -> None:
         self.message = message or self.__class__.message
+        self.error_code = error_code or self.__class__.error_code
         self.detail = detail
         super().__init__(self.message)
 

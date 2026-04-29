@@ -38,15 +38,15 @@ async def get_current_user(
         token = request.cookies.get("access_token") # 기존 호환성 유지
             
     if not token:
-        raise Unauthorized("인증 정보가 누락되었습니다. Authorization 헤더가 필요합니다.")
+        raise Unauthorized("Access Token 토큰 없음", error_code="AUTH_001")
 
     # 2. 토큰 디코딩 및 서명 검증
     try:
         payload = decode_token(token)
     except jwt.ExpiredSignatureError as e:
-        raise Unauthorized("토큰이 만료되었습니다. 다시 로그인해주세요.") from e
+        raise Unauthorized("Access Token 만기", error_code="AUTH_002") from e
     except jwt.InvalidTokenError as e:
-        raise Unauthorized("유효하지 않은 토큰입니다.") from e
+        raise Unauthorized("Access Token 유효하지 않음", error_code="AUTH_003") from e
 
     # 3. 토큰 타입 검증
     if payload.get("token_type") != "access":
@@ -77,7 +77,7 @@ async def get_current_user(
 
     user = await crud_user.get(db, id=user_id)
     if not user:
-        raise Unauthorized("사용자를 찾을 수 없습니다.")
+        raise Unauthorized("Access Token 토큰은 유효하나 해당 사용자를 찾을 수 없습니다", error_code="AUTH_006")
 
     return user
 
@@ -86,6 +86,11 @@ async def get_current_active_user(
     current_user: User = Depends(get_current_user),
 ) -> User:
     """상태가 활성화된 사용자만 반환합니다."""
+    if current_user.role == UserRole.PERMISSION_REQUIRED:
+        raise Forbidden("권한 요청이 필요합니다.", error_code="AUTH_007")
+    if current_user.role == UserRole.PERMISSION_REQUESTED:
+        raise Forbidden("권한 승인 대기 중입니다.", error_code="AUTH_008")
+    
     if not current_user.is_active:
         raise Forbidden("비활성화된 계정입니다. 관리자에게 문의하세요.")
     return current_user
@@ -97,6 +102,12 @@ def requires_role(*roles: UserRole):
         current_user: User = Depends(get_current_active_user),
     ) -> User:
         if current_user.role not in roles:
+            # 명세된 권한 부족 에러 매핑
+            if roles == (UserRole.SUPERADMIN,):
+                raise Forbidden("슈퍼 관리자 권한 필요", error_code="AUTH_010")
+            elif UserRole.ADMIN in roles:
+                raise Forbidden("관리자 권한 필요", error_code="AUTH_009")
+                
             required = ", ".join(r.value for r in roles)
             raise Forbidden(f"이 기능은 [{required}] 권한이 필요합니다. 현재 수준: {current_user.role.value}")
         return current_user
