@@ -19,7 +19,7 @@ class OIDCUserInfo(TypedDict):
     full_name: str | None         # Java: userinfo.displayName
     department: str | None        # Java: userinfo.department (팀명)
     department_code: str | None   # Java: userinfo.departmentCode (팀코드)
-    site_code: str | None         # Java: site (회사코드 — H199_W 등)
+    site: str | None              # Java: site (회사코드 — H199_W 등)
 
 
 class BaseOIDCProvider(ABC):

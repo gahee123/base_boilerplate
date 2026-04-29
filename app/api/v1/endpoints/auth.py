@@ -2,8 +2,7 @@
 app/api/v1/endpoints/auth.py
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 OIDC 및 SSO 인증 전용 엔드포인트.
-
-로컬 Auth를 철거하고 완전히 HMG 플랫폼의 PKCE Flow 기반 쿠키 로그인을 수행합니다.
+Access Token(Body) + Refresh Token(Cookie) 시스템 구현.
 """
 import base64
 import hashlib
@@ -11,8 +10,9 @@ import json
 import os
 import urllib.parse
 from datetime import UTC, datetime
-
 import jwt
+import uuid
+import logging
 from fastapi import APIRouter, Depends, Request, Response, status
 from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,11 +22,15 @@ from app.core.database import get_db
 from app.core.deps import get_current_active_user
 from app.core.redis import get_redis
 from app.core.security import decode_token
+from app.crud.user import crud_user
 from app.models.user import User
+from app.schemas.auth import AuthCodeRequest, TokenResponse, MessageResponse
 from app.schemas.user import UserResponse
 from app.services.auth import auth_service
 from app.services.oidc.factory import get_oidc_provider
-from app.utils.exceptions import BadRequest, Unauthorized
+from app.utils.exceptions import BadRequest, Unauthorized, Forbidden
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
@@ -40,10 +44,7 @@ def generate_pkce() -> tuple[str, str]:
 
 
 def _get_client_ip(request: Request) -> str:
-    """
-    클라이언트 IP 주소 추출.
-    Java(VTDM) IpUtil.getIp() 호환 — 프록시 환경 대응.
-    """
+    """클라이언트 IP 주소 추출."""
     forwarded_for = request.headers.get("X-Forwarded-For")
     if forwarded_for:
         return forwarded_for.split(",")[0].strip()
@@ -52,59 +53,57 @@ def _get_client_ip(request: Request) -> str:
         return real_ip.strip()
     if request.client:
         ip = request.client.host
-        # IPv6 loopback → IPv4 표기 (Java 호환)
         if ip == "::1" or ip == "0:0:0:0:0:0:0:1":
             return "127.0.0.1"
         return ip
     return "127.0.0.1"
 
 
-@router.get(
-    "/{provider}/login",
-    summary="HMG SSO 인가 리다이렉트",
-    description="PKCE 보안 챌린지를 생성하고 브라우저를 HMG 로그인 화면으로 전환합니다."
-)
+@router.get("/{provider}/login")
 async def oidc_login(
     provider: str,
     request: Request,
-    login_type: str | None = None,
-    site_code: str | None = None,
+    site: str | None = None,
+    upform: str | None = None,
     redis: object = Depends(get_redis),
 ):
     if not redis:
         raise Unauthorized("인프라 연결 오류: Redis가 오프라인입니다.")
 
-    # 프록시(Ingress) 환경 대응용 URL 추출
     redirect_uri = settings.HMG_SSO_CALLBACK_URI or str(request.url_for("oidc_callback", provider=provider))
     auth_provider = get_oidc_provider(provider, redirect_uri)
 
-    state = base64.urlsafe_b64encode(os.urandom(16)).decode("utf-8").rstrip("=")
-    nonce = base64.urlsafe_b64encode(os.urandom(16)).decode("utf-8").rstrip("=")
+    state = str(uuid.uuid4())
+    nonce = str(uuid.uuid4())
     verifier, challenge = generate_pkce()
 
-    # Callback 검증을 위해 보안 값들을 세션 DB에 유지 (TTL 5분)
     session_data = {"verifier": verifier, "nonce": nonce}
     await redis.set(f"sso_state:{state}", json.dumps(session_data), ex=300) # type: ignore
 
-    # Java(VTDM): Healthcheck에 사용자 IP 필요
-    client_ip = _get_client_ip(request)
+    frontend_url = settings.HMG_SSO_FRONTEND_LOGIN_CALLBACK_URL or "http://localhost:3000/callback"
 
-    url = await auth_provider.get_login_url(
-        state=state,
-        nonce=nonce,
-        code_challenge=challenge,
-        client_ip=client_ip,
-        login_type=login_type,
-        site_code=site_code,
-    )
-    return RedirectResponse(url)
+    try:
+        client_ip = _get_client_ip(request)
+        url = await auth_provider.get_login_url(
+            state=state, 
+            nonce=nonce, 
+            code_challenge=challenge,
+            client_ip=client_ip, 
+            upform=upform,
+            site=site,
+        )
+        return RedirectResponse(url)
+    except Exception as e:
+        logger.error(f"SSO Login Initiation Error: {str(e)}")
+        # Healthcheck 실패 등 초기화 에러 시 프론트엔드로 에러 리다이렉트
+        error_msg = "인증 서버(HMG) 연결에 실패했습니다."
+        if "3000" in str(e):
+            error_msg = "등록되지 않은 사이트 코드입니다."
+        
+        return RedirectResponse(url=f"{frontend_url}?error=INIT_FAILED&message={urllib.parse.quote(error_msg)}")
 
 
-@router.get(
-    "/{provider}/callback",
-    summary="SSO 인가 콜백 및 쿠키 주입",
-    description="HMG 통신망으로부터 Code를 넘겨받아 AccessToken 교환 후 백엔드 HttpOnly 쿠키를 세팅합니다."
-)
+@router.get("/{provider}/callback")
 async def oidc_callback(
     provider: str,
     code: str | None = None,
@@ -112,144 +111,177 @@ async def oidc_callback(
     error: str | None = None,
     error_description: str | None = None,
     request: Request = None,
-    response: Response = None,
     db: AsyncSession = Depends(get_db),
     redis: object = Depends(get_redis),
 ):
     if not redis:
         raise Unauthorized("백엔드 캐시 오류가 발생했습니다.")
 
-    frontend_url = settings.HMG_SSO_FRONTEND_LOGIN_CALLBACK_URL or "http://localhost:3000"
+    frontend_url = settings.HMG_SSO_FRONTEND_LOGIN_CALLBACK_URL or "http://localhost:3000/callback"
 
-    # Java(VTDM): HmgSsoController.callback() — 에러 파라미터 우선 처리
-    if error:
-        msg = _parse_error_message(error, error_description)
-        encoded_msg = urllib.parse.quote(msg, safe="")
-        return RedirectResponse(url=f"{frontend_url}?status=fail&message={encoded_msg}")
+    try:
+        # 1. HMG SSO 자체 에러 처리
+        if error:
+            msg = _parse_error_message(error, error_description)
+            return RedirectResponse(url=f"{frontend_url}?error={error}&message={urllib.parse.quote(msg)}")
 
-    if not code:
-        encoded_msg = urllib.parse.quote("인증 코드가 없습니다", safe="")
-        return RedirectResponse(url=f"{frontend_url}?status=fail&message={encoded_msg}")
+        if not code:
+            return RedirectResponse(url=f"{frontend_url}?error=NO_CODE&message={urllib.parse.quote('인증 코드가 없습니다')}")
 
-    # 1. State 기반 세션 데이터 획득을 통한 CSRF 보호 탈출
-    session_raw = await redis.get(f"sso_state:{state}") # type: ignore
-    if not session_raw:
-        raise BadRequest("로그인 세션이 만료되었습니다. 다시 로그인 버튼을 클릭해주세요.")
-    await redis.delete(f"sso_state:{state}") # type: ignore
+        # 2. 세션 검증 (CSRF 방어)
+        session_raw = await redis.get(f"sso_state:{state}") # type: ignore
+        if not session_raw:
+            return RedirectResponse(url=f"{frontend_url}?error=SESSION_EXPIRED&message={urllib.parse.quote('로그인 세션이 만료되었습니다. 다시 시도해주세요.')}")
+        
+        await redis.delete(f"sso_state:{state}") # type: ignore
+        
+        session_data = json.loads(session_raw)
+        verifier = session_data["verifier"]
+        nonce = session_data["nonce"]
+
+        redirect_uri = settings.HMG_SSO_CALLBACK_URI or str(request.url_for("oidc_callback", provider=provider))
+        auth_provider = get_oidc_provider(provider, redirect_uri)
+
+        # 3. OIDC 프로필 획득 및 유저 동기화
+        id_token, user_info = await auth_provider.process_callback(code, verifier, nonce, state)
+        user = await auth_service.sso_sync_user(db, user_info)
+        
+        # 4. 임시 인증 코드 생성
+        auth_code = await auth_service.generate_auth_code(redis, user.id)
+
+        # 성공 리다이렉트
+        return RedirectResponse(url=f"{frontend_url}?status=success&code={auth_code}")
+
+    except Exception as e:
+        logger.error(f"SSO Callback Error: {str(e)}")
+        error_code = "AUTH_FAILED"
+        message = "인증 처리 중 오류가 발생했습니다."
+        
+        if isinstance(e, (Unauthorized, BadRequest, Forbidden)):
+            message = e.detail
+            error_code = "VALIDATION_ERROR"
+            
+        # quote 에러 방지를 위해 문자열 캐스팅 및 기본값 처리
+        safe_message = urllib.parse.quote(str(message or "인증 처리 중 오류가 발생했습니다."))
+        return RedirectResponse(url=f"{frontend_url}?error={error_code}&message={safe_message}")
+
+
+@router.post("/token", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
+async def exchange_token(
+    request_data: AuthCodeRequest,
+    response: Response,
+    db: AsyncSession = Depends(get_db),
+    redis: object = Depends(get_redis),
+):
+    """임시 코드를 Access/Refresh 토큰으로 교환합니다."""
+    user_id = await auth_service.exchange_auth_code(redis, request_data.code)
+    if not user_id:
+        raise Unauthorized("유효하지 않거나 만료된 인증 코드입니다.")
+
+    user = await crud_user.get(db, id=user_id)
+    if not user or not user.is_active:
+        raise Forbidden("비활성 사용자이거나 존재하지 않는 사용자입니다.")
+
+    tokens = auth_service.create_tokens(user)
     
-    session_data = json.loads(session_raw)
-    verifier = session_data["verifier"]
-    nonce = session_data["nonce"]
-
-    redirect_uri = settings.HMG_SSO_CALLBACK_URI or str(request.url_for("oidc_callback", provider=provider))
-    auth_provider = get_oidc_provider(provider, redirect_uri)
-
-    # 2. RS256/AES-GCM 하드코어 보안 검증 후 OIDC 프로필 파싱
-    id_token, user_info = await auth_provider.process_callback(code, verifier, nonce, state)
-    
-    # 3. 유저 DB 생성 혹은 정보 업데이트. 화이트리스트 접근 제어 판별
-    user = await auth_service.sso_sync_user(db, user_info)
-    
-    # 4. 앱 구동용 쿠키 발급
-    access_token = auth_service.create_session_token(user)
-
-    # 5. Redis 비활동 세션 활성화 (Sliding Window TTL 시작)
+    # 세션 활성화 (Sliding Window)
     await auth_service.activate_session(redis, str(user.id))
 
-    redirect_resp = RedirectResponse(url=f"{frontend_url}?status=success&message={urllib.parse.quote('로그인 성공', safe='')}")
-
-    is_secure = settings.APP_ENV == "production"
-    # 쿠키 max-age: JWT 절대 만료와 동기화 (비활동 만료는 Redis가 담당)
-    max_age = settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES * 60
-
-    redirect_resp.set_cookie(
-        key="access_token",
-        value=access_token,
-        max_age=max_age,
+    # Refresh Token은 HttpOnly 쿠키에 저장
+    response.set_cookie(
+        key="refresh_token",
+        value=tokens["refresh_token"],
+        max_age=settings.JWT_REFRESH_TOKEN_EXPIRE_DAYS * 24 * 3600,
         httponly=True,
         samesite="lax",
-        secure=is_secure
-    )
-    # 추후 완벽한 로그아웃(HMG 본진 로그아웃) 처리에 사용되는 실마리 보존
-    redirect_resp.set_cookie(
-        key="id_token_hint",
-        value=id_token,
-        max_age=max_age,
-        httponly=True,
-        samesite="lax",
-        secure=is_secure
+        secure=settings.APP_ENV == "production"
     )
 
-    return redirect_resp
+    return TokenResponse(
+        access_token=tokens["access_token"],
+        expires_in=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES * 60
+    )
 
 
-@router.get(
-    "/status",
-    status_code=status.HTTP_200_OK,
-    response_model=UserResponse,
-    summary="HttpOnly 쿠키 인증 상태 검열",
-)
-async def auth_status(current_user: User = Depends(get_current_active_user)):
-    """현재 브라우저-백엔드 구간의 HttpOnly 쿠키가 무사히 파싱되는지 검증하고 프로필을 전달합니다."""
+@router.post("/refresh", response_model=TokenResponse)
+async def refresh_token(
+    request: Request,
+    response: Response,
+    db: AsyncSession = Depends(get_db),
+    redis: object = Depends(get_redis),
+):
+    """Refresh Token을 사용하여 Access Token을 갱신합니다."""
+    refresh_token = request.cookies.get("refresh_token")
+    if not refresh_token:
+        raise Unauthorized("리프레시 토큰이 없습니다.")
+
+    try:
+        payload = decode_token(refresh_token)
+        if payload.get("token_type") != "refresh":
+            raise Unauthorized("유효하지 않은 토큰 타입입니다.")
+        
+        user_id = payload.get("sub")
+        user = await crud_user.get(db, id=user_id)
+        if not user or not user.is_active:
+            raise Forbidden("사용자를 찾을 수 없거나 비활성 상태입니다.")
+
+        # 새로운 토큰 쌍 생성
+        tokens = auth_service.create_tokens(user)
+        
+        # 세션 갱신
+        await auth_service.touch_session(redis, str(user.id))
+
+        # 쿠키 갱신
+        response.set_cookie(
+            key="refresh_token",
+            value=tokens["refresh_token"],
+            max_age=settings.JWT_REFRESH_TOKEN_EXPIRE_DAYS * 24 * 3600,
+            httponly=True,
+            samesite="lax",
+            secure=settings.APP_ENV == "production"
+        )
+
+        return TokenResponse(access_token=tokens["access_token"])
+    except jwt.PyJWTError:
+        raise Unauthorized("유효하지 않거나 만료된 리프레시 토큰입니다.")
+
+
+@router.get("/me", response_model=UserResponse)
+async def get_me(current_user: User = Depends(get_current_active_user)):
+    """현재 로그인한 사용자 정보를 반환합니다."""
     return UserResponse.model_validate(current_user)
 
 
-@router.post(
-    "/logout",
-    summary="블랙리스트 기반 로그아웃 지원",
-)
+@router.post("/logout", response_model=MessageResponse)
 async def logout(
     request: Request,
     response: Response,
     redis: object | None = Depends(get_redis),
 ):
-    """
-    1) 백엔드 Access 쿠키 즉시 삭제 처리
-    2) 토큰 재사용 방지용 블랙리스트 캐싱
-    3) HMG 플랫폼과의 접점 해제를 위한 로그아웃 링크(id_token 기반) 반환 (결국 FrontEnd 가 GET 날림)
-    """
-    token = request.cookies.get("access_token")
-    id_token_hint = request.cookies.get("id_token_hint")
-    
-    if token:
+    """로그아웃 처리 (토큰 블랙리스트 및 쿠키 삭제)"""
+    # 1. Access Token 블랙리스트 (Bearer 헤더에서 추출)
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        token = auth_header.split(" ")[1]
         try:
             payload = decode_token(token)
             token_jti = payload.get("jti", "")
             user_id = payload.get("sub", "")
             token_exp = datetime.fromtimestamp(payload["exp"], tz=UTC)
-            await auth_service.logout(
-                redis, token_jti=token_jti, token_exp=token_exp, user_id=user_id
-            )
-        except jwt.InvalidTokenError:
+            await auth_service.logout(redis, token_jti=token_jti, token_exp=token_exp, user_id=user_id)
+        except jwt.PyJWTError:
             pass
-            
-    response.delete_cookie("access_token")
-    response.delete_cookie("id_token_hint")
 
-    # Java(VTDM): HmgSsoServiceImpl.generateLogoutUrl() 호환
-    hmg_logout_url = None
-    if settings.HMG_SSO_BASE_URL and id_token_hint:
-        post_logout = settings.HMG_SSO_POST_LOGOUT_REDIRECT_URI or "http://localhost:3000"
-        hmg_logout_url = (
-            f"{settings.HMG_SSO_BASE_URL}/logout"
-            f"?id_token_hint={id_token_hint}"
-            f"&post_logout_redirect_uri={post_logout}"
-        )
-
-    return {
-        "message": "로컬 세션 로그아웃 조치가 완료되었습니다.", 
-        "hmg_logout_url": hmg_logout_url
-    }
+    # 2. 쿠키 삭제
+    response.delete_cookie("refresh_token")
+    
+    return MessageResponse(message="로그아웃 되었습니다.")
 
 
 def _parse_error_message(error: str, error_description: str | None) -> str:
-    """
-    Java(VTDM) HmgSsoController.parseErrorMessage() +
-              HmgErrorUtil.AuthorizeResponse 호환 에러 메시지 파싱.
-    """
     if error_description:
         desc_upper = error_description.upper()
-        if "BLOCKED" in desc_upper or "RETIRED" in desc_upper or "SUSPENDED" in desc_upper or "REST" in desc_upper:
+        if any(k in desc_upper for k in ["BLOCKED", "RETIRED", "SUSPENDED", "REST"]):
             return "로그인 권한이 없는 사용자입니다."
         if "HEALTHCHECK" in desc_upper:
             return "HEALTHCHECK를 먼저 진행해주세요."

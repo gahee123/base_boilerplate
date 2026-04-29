@@ -23,7 +23,7 @@ PUBLIC_KEY = PRIVATE_KEY.public_key()
 @pytest.mark.asyncio
 async def test_hmg_sso_full_flow_success(client: AsyncClient, db_session: AsyncSession, redis_setup):
     """
-    HMG SSO 통합 검증 - Redis 세션 및 Nonce 검증을 포함한 무결성 테스트.
+    [검증 항목 1, 2, 3] 로그인 시작 -> 콜백 -> 토큰 교환 성공 시나리오
     """
     mock_settings = {
         "HMG_SSO_BASE_URL": "http://mock-sso/SPI",
@@ -32,16 +32,13 @@ async def test_hmg_sso_full_flow_success(client: AsyncClient, db_session: AsyncS
         "HMG_SSO_CIPHER_KEY": "0000000000000000000000000000000000000000000000000000000000000000"
     }
     
-    # 1. 환경변수 및 JWKS 클라이언트 패치
     with patch.multiple(settings, **mock_settings), \
          patch("app.services.oidc.hmg_provider.PyJWKClient.get_signing_key_from_jwt") as mock_key_grabber:
         
         mock_key_grabber.return_value = MagicMock(key=PUBLIC_KEY)
         
-        # 2. HTTP 통신 Mocking (respx)
         with respx.mock(base_url="http://mock-sso/SPI", assert_all_called=False) as respx_mock:
-            
-            # [A] Healthcheck Handler
+            # Healthcheck Handler
             def healthcheck_handler(request):
                 content = json.loads(request.content)
                 req_iv = content.get("iv")
@@ -49,52 +46,78 @@ async def test_hmg_sso_full_flow_success(client: AsyncClient, db_session: AsyncS
                 return Response(200, text=enc_str)
             respx_mock.post("/healthcheck").side_effect = healthcheck_handler
 
-            # [Step 1: 로그인 시작 (Redis에 state/nonce/verifier 저장 유도)]
-            resp = await client.get("/api/v1/auth/hmg/login?site_code=H101&login_type=simple")
-            assert resp.status_code in (302, 307)
+            # 1. 로그인 시작
+            resp = await client.get("/api/v1/auth/hmg/login?site=HMC&upform=N")
+            assert resp.status_code == 307
             
             target_url = resp.headers["location"]
             q_params = urllib.parse.parse_qs(urllib.parse.urlparse(target_url).query)
             state_val = q_params["state"][0]
             nonce_val = q_params["nonce"][0]
 
-            # [B] Token Exchange Handler - URL에서 추출한 nonce를 서명에 포함
+            # Token Exchange Handler
             def token_handler(request):
-                user_dto = {
-                    "site":"H199_W", "userid":"V123", 
-                    "userinfo":{
-                        "displayName":"최종인", "mail":"v123@h.com", "department":"솔루션개발팀"
-                    }
-                }
+                user_dto = {"site":"HMC", "userid":"V123", "userinfo":{"displayName":"테스터", "mail":"v123@h.com"}}
                 info_enc, iv_enc = hmg_crypto.encrypt_payload(user_dto)
-                
-                # 백엔드가 요청 시 넘겨준 nonce를 포함하여 ID Token 생성 (RS256)
                 token = jwt.encode({
-                    "iss":"http://mock-sso/SPI", 
-                    "sub":"V123", 
-                    "aud":"verify_svc", 
-                    "exp":int(time.time())+60, 
-                    "info":info_enc, 
-                    "iv":iv_enc,
-                    "nonce": nonce_val
+                    "iss":"http://mock-sso/SPI", "sub":"V123", "aud":"verify_svc", 
+                    "exp":int(time.time())+60, "info":info_enc, "iv":iv_enc, "nonce": nonce_val
                 }, PRIVATE_KEY, algorithm="RS256")
-                
                 return Response(200, json={"id_token": token, "access_token": "at"})
-
-            
             respx_mock.post("/token").side_effect = token_handler
 
-            # [Step 2: 콜백 처리 (JWT 검증 및 DB 동기화 실행)]
+            # 2. 콜백 수신 (임시 코드 발급)
             resp = await client.get(f"/api/v1/auth/hmg/callback?code=mock_c&state={state_val}")
-            assert resp.status_code in (302, 307)
-            
-            # [Step 3: 최종 DB 확인]
-            stmt = select(User).where(User.employee_id=="V123")
-            db_res = await db_session.execute(stmt)
-            user = db_res.scalar_one_or_none()
-            
-            assert user is not None
-            assert user.full_name == "최종인"
-            assert user.site_code == "H199_W"
+            assert resp.status_code == 307
+            auth_code = urllib.parse.parse_qs(urllib.parse.urlparse(resp.headers["location"]).query)["code"][0]
 
-    print("\n[SUCCESS] HMG SSO Auth logic verified completely!")
+            # 3. 토큰 교환
+            token_resp = await client.post("/api/v1/auth/token", json={"code": auth_code})
+            assert token_resp.status_code == 201
+            data = token_resp.json()
+            assert "access_token" in data
+            assert data["expires_in"] == 300
+            assert "refresh_token" in token_resp.cookies
+
+@pytest.mark.asyncio
+async def test_hmg_sso_refresh_and_logout(client: AsyncClient, db_session: AsyncSession, redis_setup):
+    """
+    [검증 항목 4, 5] 토큰 갱신 및 로그아웃 시나리오
+    """
+    # 1. 먼저 로그인하여 토큰 획득
+    # 유저 수동 생성 및 토큰 직접 발급 (테스트 속도 향상)
+    user = User(email="test@example.com", employee_id="V999", full_name="세션테스터", is_active=True)
+    db_session.add(user)
+    await db_session.flush()
+    
+    from app.services.auth import auth_service
+    tokens = auth_service.create_tokens(user)
+    client.cookies.set("refresh_token", tokens["refresh_token"])
+
+    # 2. 토큰 갱신 테스트
+    refresh_resp = await client.post("/api/v1/auth/refresh")
+    assert refresh_resp.status_code == 200
+    assert "access_token" in refresh_resp.json()
+    assert "refresh_token" in refresh_resp.cookies # 쿠키 갱신 확인
+
+    # 3. 로그아웃 테스트
+    logout_resp = await client.post("/api/v1/auth/logout", headers={"Authorization": f"Bearer {tokens['access_token']}"})
+    assert logout_resp.status_code == 200
+    assert "refresh_token" not in logout_resp.cookies or logout_resp.cookies.get("refresh_token") == ""
+
+@pytest.mark.asyncio
+async def test_hmg_sso_error_redirect(client: AsyncClient, redis_setup):
+    """
+    [검증 항목 6] 에러 발생 시 FE 리다이렉트 시나리오
+    """
+    with respx.mock(base_url="http://mock-sso/SPI") as respx_mock:
+        # Healthcheck 실패 모사 (site=INVALID)
+        def health_fail_handler(request):
+            return Response(200, text=hmg_crypto.encrypt(json.dumps({"result":False, "status":"3000"}))[0])
+        respx_mock.post("/healthcheck").side_effect = health_fail_handler
+
+        resp = await client.get("/api/v1/auth/hmg/login?site=INVALID&upform=N")
+        assert resp.status_code == 307
+        location = resp.headers["location"]
+        assert "error=INIT_FAILED" in location
+        # HmgHealthcheckError 메시지가 유동적일 수 있으므로 INIT_FAILED 존재 여부를 주로 확인

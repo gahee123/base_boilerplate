@@ -148,6 +148,19 @@ services:
       db:
         condition: service_healthy
     restart: unless-stopped
+    
+  # ── Mock HMG SSO (Test Only) ──────────────────────────────
+  mock-sso:
+    build:
+      context: .
+      target: dev
+    container_name: mock-hmg-sso
+    ports:
+      - "9092:9092"
+    command: /opt/venv/bin/python tests/mock_sso/main.py
+    volumes:
+      - .:/code
+    restart: unless-stopped
 
 volumes:
   postgres_data:

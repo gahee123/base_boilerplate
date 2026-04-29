@@ -14,14 +14,10 @@ class UserRole(str, enum.Enum):
     PERMISSION_REQUESTED = "permission_requested"
     PERMISSION_REQUIRED = "permission_required"
 
-class HmgSiteCode(str, enum.Enum):
+class HmgSite(str, enum.Enum):
     """HMG 계열사 회사코드"""
-    HYUNDAI = "H101_W"
-    KIA = "K101_W"
-    AUTOEVER = "H199_W"
+    HMC = "H101_W"
+    KMC = "K101_W"
+    HAE = "H199_W"
     HKMC = "HKMC_W"
-
-class HmgLoginType(str, enum.Enum):
-    """HMG SSO 로그인 타입 (간편/일반)"""
-    SIMPLE = "simple"
-    MANUAL = "manual"
+    ALL = "ALL"

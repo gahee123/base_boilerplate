@@ -67,8 +67,12 @@ async def healthcheck(request: Request):
         decrypted = hmg_crypto.decrypt_payload(data["str"], data["iv"])
         print(f"[Mock SSO] Healthcheck Decrypted: {decrypted}")
         
-        # 2. 결과 생성 및 암호화 (HMG 규격: 요청에 사용된 IV 재사용)
-        json_res = json.dumps({"result": True, "status": "200"})
+        # [추가] 검증 로직: site가 'INVALID'면 실패 응답
+        if decrypted.get("site") == "INVALID":
+            json_res = json.dumps({"result": False, "status": "3000"}) # 등록되지 않은 회사 에러
+        else:
+            json_res = json.dumps({"result": True, "status": "200"})
+
         enc_str, _ = hmg_crypto.encrypt(json_res, iv_b64=data["iv"])
 
         
@@ -117,7 +121,7 @@ async def token(request: Request):
         # JWT 페이로드 (ProdJwtUtil 호환)
         now = int(time.time())
         id_token_payload = {
-            "iss": "http://127.0.0.1:9092/SPI",
+            "iss": "http://mock-sso:9092/SPI",
             "sub": "V123456",
             "aud": str(form_data.get("client_id")),
             "exp": now + 3600,

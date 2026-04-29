@@ -1,91 +1,89 @@
-# HMG SSO 연동 검증 및 테스트 가이드
+# HMG SSO 통합 인증 검증 가이드 (QA Guide)
 
-이 문서는 FastAPI 백엔드 환경에서 HMG SSO(현대차그룹 통합 인증) 시스템 연동이 프로덕션 수준의 보안 규격을 준수하는지 검증한 방법론과, 테스트 진행을 위한 가이드를 제공합니다.
+본 문서는 HMG SSO(OIDC/PKCE) 연동 기능의 정상 작동 여부를 검증하기 위한 절차와 항목을 정의합니다.
 
-## 1. 검증 방식 및 대상
+## 1. 환경 구성 (Prerequisites)
 
-본 프로젝트에서는 외부 네트워크나 실제 운영 서버 없이도 완벽한 테스트가 가능하도록 **HMG SSO의 핵심 보안 규격을 구현한 독립적인 가상 서버(Mock SSO Server)**를 구축하여 교차 검증을 수행했습니다.
+검증을 진행하기 전 아래 서비스들이 정상 실행 중이어야 합니다.
 
-### 무엇을 검증했는가?
-1. **암호화 통신 무결성 (AES-256-GCM)**: Healthcheck 시 클라이언트가 보낸 IV(초기화 벡터)를 재사용하여 응답을 암호화하는 HMG 특유의 핸드쉐이크 규격 통과 여부.
-2. **전자서명 검증 (RS256 & JWKS)**: 발급된 ID Token이 위변조되지 않았는지 가상 서버에서 실시간 발급한 RSA 공개키를 통해 수학적으로 검증.
-3. **보안 세션 (Nonce & State)**: Replay Attack 방지를 위해 로그인 시작 시 발급하여 Redis에 저장해 둔 `nonce`가 토큰 안에 정확히 박혀서 돌아오는지 확인.
-4. **이중 암호화 파싱**: JWT 내부에 존재하는 `info` 필드를 다시 AES-GCM으로 복호화하여 최종 유저 정보(JSON)를 추출해내는 다중 파싱 로직.
-5. **데이터 동기화 (Upsert)**: SSO에서 넘어온 사번(`V123456`)을 기준으로 애플리케이션 데이터베이스 내에서 사용자 자동 가입 및 권한 할당이 처리되는지 확인.
+- **FastAPI App**: 백엔드 API 서버 (포트 8000)
+- **Redis**: SSO 세션(state, nonce) 및 인증 코드 관리
+- **Mock SSO Server**: HMG SSO 실 서버를 대체하는 모의 서버 (포트 9092)
+- **Database**: 유저 정보 동기화 확인용
+
+### 로컬 실행 명령어
+```powershell
+# Docker Compose를 이용한 전체 스택 실행 (Mock SSO 포함)
+wsl make up
+```
 
 ---
 
-## 2. 내부 로그인 플로우 (테스트 & 운영 공통)
+## 2. 검증 항목 리스트 (Verification Checklist)
 
-이 검증 과정에서 발생한 백엔드 내부의 흐름은 다음과 같습니다. 
-
-1. **[요청 수신]**: 사용자가 `/api/v1/auth/hmg/login`을 호출합니다.
-2. **[보안 발급]**: 백엔드가 무작위 `state`와 `nonce`를 생성하여 Redis에 저장합니다.
-3. **[사전 확인]**: 백엔드가 가짜 SSO 서버(`/healthcheck`)에 암호화된 데이터를 던져 무결성을 확인합니다.
-4. **[리다이렉트]**: 이상이 없으면, 백엔드가 HTTP 307로 사용자의 브라우저를 SSO 로그인 창으로 튕겨냅니다. (이 때 주소에 `nonce`가 포함됩니다.)
-5. **[로그인 모사]**: (수동 테스트 시) 사용자가 가상의 로그인 창을 통과하면, 인가 코드가 생성되어 다시 백엔드의 `/callback`으로 튕겨냅니다.
-6. **[토큰 발급]**: 백엔드가 코드를 SSO 서버(`/token`)에 제출하고 JWT 토큰을 받습니다.
-7. **[복호화 및 저장]**: 토큰 서명과 `nonce`를 검증하고, `info`를 AES-GCM으로 해독한 뒤, 최종 유저 정보를 DB에 저장합니다.
-8. **[완료]**: 백엔드가 자체 쿠키(`access_token`)를 굽고, 프론트엔드 대시보드로 최종 리다이렉트 시킵니다.
-
-> **💡 실제 HMG 로그인 플로우와 완전히 동일한가요?**  
-> **네, 100% 동일합니다.**  
-> 백엔드 서버 입장에서는 통신 대상이 '가짜 SSO 서버'인지 '진짜 현대차 서버'인지 전혀 인지하지 못합니다. 단 1줄의 코드도 다르게 동작하지 않으며, 동일한 AES-GCM 라이브러리, 동일한 DB, 동일한 Redis를 거칩니다.  
-> 유일한 차이는 `.env`의 URL 주소가 가짜 서버(`localhost:9092`)로 향해 있다는 것뿐이므로, 이 검증이 통과했다는 것은 운영 환경에서도 즉각 동작함을 보장합니다.
-
----
-
-## 3. 자동 검증 방법 가이드 (CI/CD용)
-
-가장 빠르고 정확하게 전체 로직의 이상 유무를 판별하는 자동화된 테스트 방법입니다. (0.5초 소요)
-
-**사전 준비**
-테스트용 DB(`app_db_test`)가 필요합니다. 터미널에서 다음 명령어로 초기화합니다.
-```bash
-poetry run python scripts/setup_test_db.py
-```
-
-**실행 방법**
-pytest를 이용해 E2E 검증 코드를 실행합니다. 내부적으로 `respx`를 이용해 통신을 가로채므로 별도의 서버를 켤 필요가 없습니다.
-```bash
-poetry run pytest tests/test_hmg_sso_e2e.py -v -s
-```
-**결과**: `[SUCCESS] HMG SSO Auth logic verified completely!` 메시지가 뜨면 통과입니다.
+| 구분 | 검증 항목 | 기대 결과 | 중요도 |
+| :--- | :--- | :--- | :---: |
+| **로그인 시작** | Healthcheck 무결성 검증 | 백엔드와 SSO 서버 간 AES-GCM 암호화 통신 성공 | 필수 |
+| | 인가 URL 리다이렉트 | `state`, `nonce`, `code_challenge` 포함 URL로 이동 | 필수 |
+| **콜백 처리** | Authorization Code 교환 | SSO 서버로부터 ID Token 및 Access Token 정상 수신 | 필수 |
+| | ID Token 서명 검증 | RS256 알고리즘 및 공개키(JWKS) 기반 위조 방지 확인 | 필수 |
+| | 유저 정보 복호화 | ID Token 내 AES-GCM 암호화된 `info` 필드 파싱 성공 | 필수 |
+| | 유저 DB 동기화 (Upsert) | 신규 가입 또는 기존 정보 업데이트 (부서/사이트 등) | 필수 |
+| **보안 검증** | Replay Attack 방지 | 한 번 사용된 `state` 또는 `nonce` 재사용 시 차단 | 높음 |
+| | PKCE 검증 | `code_verifier` 불일치 시 토큰 발급 차단 | 높음 |
+| | 세션 만료 제어 | 로그인 시도 후 일정 시간(5분) 경과 시 콜백 차단 | 보통 |
+| **최종 인증** | 내부 코드 교환 | 단기 코드를 Access(Body) / Refresh(Cookie)로 교환 | 필수 |
+| **에러 케이스** | 유효하지 않은 사이트 | `site=INVALID` 요청 시 FE 에러 페이지 리다이렉트 | 보통 |
+| | 인증 거부/취소 | 사용자가 SSO 페이지에서 취소 시 에러 처리 | 보통 |
 
 ---
 
-## 4. 수동 검증 방법 가이드 (개발자 브라우저 직접 테스트)
+## 3. 수동 검증 절차 (Manual Simulation)
 
-프론트엔드 개발 시 연동 테스트를 하거나, 개발자가 흐름을 시각적으로 확인하고 싶을 때 사용합니다. 
-(⚠️ 윈도우 8081 포트 충돌 방지를 위해 **Mock 서버는 9092 포트**를 사용합니다.)
+프론트엔드 연동 전 백엔드 로직을 단독 검증할 때 아래 `curl` 절차를 따릅니다.
 
-### Step 1. 인프라 설정
-프로젝트 최상단의 `.env` 파일에 다음 항목이 설정되어 있는지 확인합니다.
-```env
-# Mock 서버 접속 주소 지정 (IPv6 블랙홀 방지를 위해 127.0.0.1 사용)
-HMG_SSO_BASE_URL=http://127.0.0.1:9092/SPI
-HMG_SSO_CLIENT_ID="verify_svc"
-HMG_SSO_CALLBACK_URI=http://127.0.0.1:8000/api/v1/auth/hmg/callback
+### Step 1: 로그인 진입 및 파라미터 획득
+```powershell
+# 사이트 코드(site)와 로그인 타입(upform)을 지정하여 호출
+curl.exe -v "http://localhost:8000/api/v1/auth/hmg/login?site=HAE&upform=N"
+```
+- **체크포인트**: 응답 헤더 `location`에서 `state`와 `nonce` 값을 추출합니다.
+
+### Step 2: 콜백 시뮬레이션 (Mock SSO 전용)
+Mock SSO 서버는 `code` 값에 `nonce`를 포함시켜 전달해야 정상 작동합니다.
+```powershell
+# 추출한 state와 nonce를 대입
+curl.exe -v "http://localhost:8000/api/v1/auth/hmg/callback?code=mock_code__{nonce}&state={state}"
+```
+- **체크포인트**: 응답 헤더 `location`에 `status=success`와 내부 인증용 `code`가 포함되었는지 확인합니다.
+
+### Step 3: 최종 토큰 교환
+```powershell
+# Step 2에서 얻은 내부 code를 post body에 담아 호출
+# (Windows PowerShell 환경에서는 따옴표 처리에 주의하세요)
+wsl curl -v -X POST "http://localhost:8000/api/v1/auth/token" \
+  -H "Content-Type: application/json" \
+  -d '{"code": "{internal_code}"}'
+```
+- **체크포인트**: 
+  - 응답 Body에 `access_token` 존재 확인
+  - 응답 헤더 `set-cookie`에 `refresh_token` (HttpOnly) 존재 확인
+
+---
+
+## 4. 자동화 테스트 실행 (Automated Test)
+
+CI/CD 또는 배포 전 회귀 테스트를 위해 아래 명령어를 실행합니다.
+
+```powershell
+# 컨테이너 내부에서 E2E 테스트 실행
+wsl docker exec fastapi-app pytest tests/test_hmg_sso_e2e.py
 ```
 
-### Step 2. 서버 실행 (터미널 2개 필요)
-**터미널 A (가상 SSO 서버 켜기)**
-```bash
-poetry run python tests/mock_sso/main.py
-```
+---
 
-**터미널 B (우리 백엔드 서버 켜기)**
-*(주의: 도커(Docker Compose)로 실행할 경우 네트워크 라우팅이 복잡해지므로, 로컬에서 직접 켜는 것을 권장합니다.)*
-```bash
-poetry run uvicorn app.main:app --reload
-```
+## 5. 트러블슈팅 (Troubleshooting)
 
-### Step 3. 브라우저에서 실행해보기
-크롬 브라우저를 열고 주소창에 다음을 입력합니다. (혹은 8002로)
-👉 `http://127.0.0.1:8000/api/v1/auth/hmg/login?site_code=H101_W&login_type=simple`
-
-**성공 시 확인 방법**:
-1. 주소창이 빠르게 깜빡인 뒤, `.env`에 설정해둔 `HMG_SSO_FRONTEND_LOGIN_CALLBACK_URL` 주소(예: yourdomain.com)로 이동하며 종료됩니다.
-2. 브라우저 **[개발자 도구 (F12) -> Application -> Cookies]** 를 확인하면 `access_token`이 저장되어 있습니다.
-(목록에 https://yourdomain.com 외에 http://127.0.0.1:8000 (또는 8002) 항목이 따로 표시되지 않는다면, 브라우저에 http://127.0.0.1:8000/api/v1/auth/status 입력해서 확인.)
-3. 백엔드의 Swagger API 문서 (`http://127.0.0.1:8000/docs`)나 DB 툴(DBeaver 등)을 통해 `app_db` 데이터베이스의 `users` 테이블을 조회하면, `V123456 (홍길동)` 유저가 자동 생성되어 있는 것을 볼 수 있습니다.
+- **Nonce 불일치 에러**: Step 2 호출 시 `code` 파라미터에 `__` 구분자와 함께 실제 `nonce`를 넣었는지 확인하세요.
+- **세션 만료 (SESSION_EXPIRED)**: 동일한 `state`로 콜백을 두 번 요청하면 보안 정책상 세션이 삭제됩니다. Step 1부터 다시 진행하세요.
+- **DB Not Null 제약 위반**: `User` 모델에 필수 컬럼(email 등)이 추가되었습니다. 테스트 데이터 생성 시 누락되지 않도록 주의하세요.

@@ -4,11 +4,12 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from uuid import UUID, uuid4
+import json
 from app.core.config import settings
-from app.core.security import create_access_token
+from app.core.security import create_access_token, create_refresh_token
 from app.models.user import User, UserGroup, UserRole
 from app.services.oidc.base import OIDCUserInfo
-from app.services.superset import superset_service
 from app.utils.exceptions import Forbidden
 
 logger = logging.getLogger(__name__)
@@ -49,7 +50,7 @@ class AuthService:
                 full_name=user_info.get("full_name", ""),
                 department=department,
                 department_code=department_code,
-                site_code=user_info.get("site_code", ""),
+                site=user_info.get("site", ""),
                 role=target_role,
                 is_active=True,
                 last_login_at=datetime.now(UTC),
@@ -61,7 +62,7 @@ class AuthService:
             user.full_name = user_info.get("full_name", "")
             user.department = department
             user.department_code = department_code
-            user.site_code = user_info.get("site_code", "")
+            user.site = user_info.get("site", "")
 
             # 운영자 등 상위 권한을 지닌 경우 강등 방지 처리
             if user.role == UserRole.PERMISSION_REQUIRED and target_role == UserRole.USER:
@@ -71,26 +72,37 @@ class AuthService:
             logger.info("기존 HMG SSO 유저 로그인: %s", user.employee_id)
         
         await db.flush()
-        await db.refresh(user)
-
-        # ── Superset JIT Provisioning ──
-        # 유저가 생성되거나 업데이트된 후 Superset에도 계정을 동기화합니다.
-        # 실패하더라도 메인 서비스 로그인에는 지장이 없도록 예외 처리를 내부에서 소화합니다.
-        await superset_service.sync_user(
-            username=user.employee_id,
-            first_name=user.full_name or "User",
-            last_name=user.employee_id,
-            email=user.email
-        )
-
         if not user.is_active:
             raise Forbidden("계정이 시스템 정책에 의해 비활성화된 상태입니다.")
             
         return user
 
-    def create_session_token(self, user: User) -> str:
-        """HttpOnly 쿠키 및 API 통신용 Access Token 단일 발급."""
-        return create_access_token(user.id, user.role.value)
+    async def generate_auth_code(self, redis: object, user_id: UUID) -> str:
+        """FE 리다이렉트용 단기 임시 코드를 생성합니다. (TTL 60초)"""
+        code = str(uuid4())
+        if redis:
+            await redis.set(f"auth_code:{code}", str(user_id), ex=settings.AUTH_CODE_EXPIRE_SECONDS) # type: ignore
+        return code
+
+    async def exchange_auth_code(self, redis: object, code: str) -> UUID | None:
+        """임시 코드를 유저 ID로 교환하고 코드를 삭제합니다. (One-time use)"""
+        if not redis:
+            return None
+        
+        user_id_str = await redis.get(f"auth_code:{code}") # type: ignore
+        if user_id_str:
+            await redis.delete(f"auth_code:{code}") # type: ignore
+            return UUID(user_id_str.decode() if isinstance(user_id_str, bytes) else user_id_str)
+        return None
+
+    def create_tokens(self, user: User) -> dict[str, str]:
+        """Access Token과 Refresh Token 쌍을 생성합니다."""
+        access_token = create_access_token(user.id, user.role.value)
+        refresh_token = create_refresh_token(user.id)
+        return {
+            "access_token": access_token,
+            "refresh_token": refresh_token
+        }
 
     async def activate_session(self, redis: object, user_id: str) -> None:
         """

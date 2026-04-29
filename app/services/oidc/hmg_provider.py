@@ -18,7 +18,7 @@ import httpx
 import jwt
 from jwt import PyJWKClient
 
-from app.models.enums import HmgLoginType, HmgSiteCode
+from app.models.enums import HmgSite
 from app.services.oidc.base import BaseOIDCProvider, OIDCUserInfo
 from app.utils.exceptions import Unauthorized
 from app.utils.sso.crypto import hmg_crypto
@@ -39,8 +39,8 @@ class HMGOIDCProvider(BaseOIDCProvider):
     """
 
     # HMG 전용 기본값 정의 (Enum 사용)
-    DEFAULT_SITE_CODE = HmgSiteCode.AUTOEVER
-    DEFAULT_LOGIN_TYPE = HmgLoginType.SIMPLE
+    DEFAULT_SITE = HmgSite.HAE
+    DEFAULT_UPFORM = "N"
 
     def __init__(
         self,
@@ -48,19 +48,16 @@ class HMGOIDCProvider(BaseOIDCProvider):
         client_secret: str,
         redirect_uri: str,
         base_url: str,
-        site_code: str | None = None,
-        login_type: str | None = None,
+        site: str | None = None,
+        upform: str | None = None,
     ):
         super().__init__(client_id, client_secret, redirect_uri)
         # base_url에 /SPI 경로가 포함된 것을 전제 (Java HmgUrlBuilder 방식)
         self.base_url = base_url.rstrip("/")
 
         # 주입된 값이 없으면 클래스 기본값(상수) 사용
-        self.site_code = site_code or self.DEFAULT_SITE_CODE
-        self.login_type = login_type or self.DEFAULT_LOGIN_TYPE
-
-        # login_type을 upform 값으로 변환 (Java HmgSsoLoginType 호환)
-        self.upform = "N" if self.login_type == HmgLoginType.SIMPLE else "Y"
+        self.site = site or self.DEFAULT_SITE
+        self.upform = upform or self.DEFAULT_UPFORM
 
         # 토큰 전자서명을 검증하기 위한 공개키(JWKS) Endpoint
         # Java: HmgUrlBuilder.Endpoints.CERT = "/cert"
@@ -72,8 +69,8 @@ class HMGOIDCProvider(BaseOIDCProvider):
         self,
         state: str,
         client_ip: str,
-        login_type: str | None = None,
-        site_code: str | None = None,
+        upform: str | None = None,
+        site: str | None = None
     ) -> None:
         """
         로그인 URL 발급 전 HMG SSO와 백엔드 간 무결성 교차 검증.
@@ -83,21 +80,13 @@ class HMGOIDCProvider(BaseOIDCProvider):
         - text/plain Content-Type 전송
         - 응답 본문 전체를 AES-GCM 복호화하여 결과 확인
         """
-        # 요청 파라미터가 있으면 우선 사용, 없으면 인스턴스 기본값 사용
-        target_site = site_code or self.site_code
-        target_upform = (
-            ("N" if login_type == HmgLoginType.SIMPLE else "Y")
-            if login_type
-            else self.upform
-        )
-
         # Java: HealthCheckEncryptedDataDto 구조 그대로
         encrypted_data = {
             "state": state,
-            "site": target_site,
+            "site": site or self.site,
             "svc": self.client_id,
             "back": self.redirect_uri,
-            "upform": target_upform,
+            "upform": upform or self.upform,
             "userip": client_ip,
         }
 
@@ -152,8 +141,8 @@ class HMGOIDCProvider(BaseOIDCProvider):
         nonce: str,
         code_challenge: str,
         client_ip: str = "127.0.0.1",
-        login_type: str | None = None,
-        site_code: str | None = None,
+        upform: str | None = None,
+        site: str | None = None,
     ) -> str:
         """
         인가(Authorization) 1단계: Healthcheck 통과 후 리다이렉트 URL 조립.
@@ -161,12 +150,12 @@ class HMGOIDCProvider(BaseOIDCProvider):
         Java(VTDM) HmgSsoServiceImpl.generateAuthUrl() 호환.
         """
         # HMG 단독 로직: Healthcheck 선행
-        healthcheck_state = str(uuid.uuid4())
+        # 메뉴얼: healthcheck에서 사용한 랜덤 세션값(state)을 authorize에서도 사용해야 함
         await self._health_check(
-            healthcheck_state,
+            state,
             client_ip,
-            login_type=login_type,
-            site_code=site_code
+            upform=upform,
+            site=site
         )
 
         # Java: AuthorizeRequestDto → HmgUrlBuilder.buildAuthorizeUrl()
@@ -294,7 +283,7 @@ class HMGOIDCProvider(BaseOIDCProvider):
         full_name = ""
         department = ""
         department_code = ""
-        site_code = ""
+        site = ""
 
         if enc_info and enc_iv:
             try:
@@ -302,7 +291,7 @@ class HMGOIDCProvider(BaseOIDCProvider):
                 info_dto = json.loads(decrypted_str)
 
                 # Java: UserInfoDto 최상위 필드
-                site_code = info_dto.get("site", "")
+                site = info_dto.get("site", "")
                 employee_id = info_dto.get("userid", employee_id)
 
                 # Java: UserInfoDto.userinfo (UserDetailsDto) 중첩 구조
@@ -334,7 +323,7 @@ class HMGOIDCProvider(BaseOIDCProvider):
         # 이메일 폴백: mail이 없으면 site 기반 도메인 자동 생성
         # (Java ProdJwtAuthenticationFilter.getUserEmail() 참조)
         if not email and employee_id:
-            email = self._generate_fallback_email(employee_id, site_code)
+            email = self._generate_fallback_email(employee_id, site)
 
         # 이름 폴백: displayName이 없으면 userid 사용
         # (Java ProdJwtAuthenticationFilter.getUserName() 참조)
@@ -347,13 +336,13 @@ class HMGOIDCProvider(BaseOIDCProvider):
             full_name=full_name,
             department=department,
             department_code=department_code,
-            site_code=site_code,
+            site=site,
         )
 
     @staticmethod
-    def _generate_fallback_email(employee_id: str, site_code: str) -> str:
+    def _generate_fallback_email(employee_id: str, site: str) -> str:
         """
-        mail 필드가 없을 때 site_code 기반으로 이메일을 자동 생성합니다.
+        mail 필드가 없을 때 site 기반으로 이메일을 자동 생성합니다.
 
         Java ProdJwtAuthenticationFilter.getUserEmail() 동일 로직:
           H101_W → @hyundai.com
@@ -364,5 +353,5 @@ class HMGOIDCProvider(BaseOIDCProvider):
             "H101_W": "hyundai.com",
             "K101_W": "kia.com",
         }
-        domain = domain_map.get(site_code, "hyundai-autoever.com")
+        domain = domain_map.get(site, "hyundai-autoever.com")
         return f"{employee_id}@{domain}"

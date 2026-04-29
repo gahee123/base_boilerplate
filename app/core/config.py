@@ -42,8 +42,9 @@ class Settings(BaseSettings):
     # ── JWT Authentication ───────────────────────────────────
     JWT_SECRET_KEY: str = "CHANGE-THIS-IN-PRODUCTION-USE-LONG-RANDOM-STRING"
     JWT_ALGORITHM: str = "HS256"
-    JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 480  # 8시간 (토큰 자체 최대 수명 안전망)
+    JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 5  # 5분 (보안 강화)
     JWT_REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+    AUTH_CODE_EXPIRE_SECONDS: int = 60         # 임시 인증 코드 수명
 
     # ── CORS ─────────────────────────────────────────────────
     CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://localhost:8080"]

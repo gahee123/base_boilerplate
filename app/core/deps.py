@@ -28,15 +28,17 @@ async def get_current_user(
     db: AsyncSession = Depends(get_db),
 ) -> User:
     """HttpOnly 쿠키 기반 인증으로 현재 사용자를 추출합니다."""
-    # 1. HttpOnly 쿠키에서 엑세스 토큰, 없으면 Header(테스트용 Swagger)에서 폴백 추출
-    token = request.cookies.get("access_token")
+    # 1. Header(Authorization: Bearer) 우선 추출, 없으면 Cookie(access_token) 폴백
+    token = None
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        token = auth_header.split(" ")[1]
+    
     if not token:
-        auth_header = request.headers.get("Authorization")
-        if auth_header and auth_header.startswith("Bearer "):
-            token = auth_header.split(" ")[1]
+        token = request.cookies.get("access_token") # 기존 호환성 유지
             
     if not token:
-        raise Unauthorized("인증 토큰을 찾을 수 없습니다. (쿠키 누락)")
+        raise Unauthorized("인증 정보가 누락되었습니다. Authorization 헤더가 필요합니다.")
 
     # 2. 토큰 디코딩 및 서명 검증
     try:

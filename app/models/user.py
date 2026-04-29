@@ -32,7 +32,7 @@ class User(BaseModel, AuditableMixin):
     full_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
     department: Mapped[str | None] = mapped_column(String(100), nullable=True)  # 부서 명칭
     department_code: Mapped[str | None] = mapped_column(String(100), index=True, nullable=True) # 부서 코드
-    site_code: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    site: Mapped[str | None] = mapped_column(String(50), nullable=True)
     
     role: Mapped[UserRole] = mapped_column(
         SQLAlchemyEnum(UserRole, name="user_role", native_enum=False),

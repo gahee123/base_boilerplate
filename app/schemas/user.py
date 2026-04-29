@@ -19,7 +19,7 @@ class UserSyncCreate(BaseSchema):
     employee_id: str
     full_name: str | None = None
     department: str | None = None
-    site_code: str | None = None
+    site: str | None = None
 
 
 class UserAdminUpdate(BaseSchema):
@@ -40,7 +40,7 @@ class UserResponse(BaseSchema):
     employee_id: str
     full_name: str | None = None
     department: str | None = None
-    site_code: str | None = None
+    site: str | None = None
     role: UserRole
     is_active: bool
     last_login_at: datetime | None = None

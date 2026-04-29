@@ -8,7 +8,7 @@ Alembic이 모든 모델의 metadata를 감지하려면
 """
 from app.models.audit_log import AuditLog
 from app.models.base import Base, BaseModel
-from app.models.enums import HmgLoginType, HmgSiteCode, UserRole
+from app.models.enums import HmgSite, UserRole
 from app.models.user import User, UserGroup
 from app.models.user_dashboard import UserDashboard
 
@@ -20,6 +20,5 @@ __all__ = [
     "UserDashboard",
     "UserRole",
     "AuditLog",
-    "HmgSiteCode",
-    "HmgLoginType",
+    "HmgSite",
 ]
