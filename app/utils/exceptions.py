@@ -7,9 +7,17 @@ app/utils/exceptions.py
 HTTPException은 엔드포인트 계층에서만 허용하고,
 Service/CRUD 계층에서는 반드시 이 모듈의 예외를 사용합니다.
 """
+import traceback
+from datetime import datetime, timezone
+
 import sentry_sdk
+import structlog
 from fastapi import Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
+
+from app.core.config import settings
 
 
 class AppException(Exception):
@@ -96,16 +104,22 @@ class InternalServerError(AppException):
 # ── Global Exception Handlers ──────────────────────────────
 async def app_exception_handler(request: Request, exc: AppException) -> JSONResponse:
     """AppException 계열 예외를 일관된 JSON으로 변환합니다."""
-    return JSONResponse(
-        status_code=exc.status_code,
-        content={
-            "error": {
-                "code": exc.error_code,
-                "message": exc.message,
-                "detail": exc.detail,
-            },
-        },
-    )
+    trace_id = structlog.contextvars.get_contextvars().get("request_id")
+    
+    content = {
+        "statusCode": exc.status_code,
+        "message": exc.message,
+        "error": exc.error_code,
+        "path": request.url.path,
+        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "traceId": trace_id
+    }
+    
+    # 개발 환경에서만 에러 상세 내용 노출
+    if settings.APP_ENV in ("local", "development") and exc.detail:
+        content["stack"] = exc.detail
+        
+    return JSONResponse(status_code=exc.status_code, content=content)
 
 
 async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
@@ -115,13 +129,67 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
     (서버 로그에만 기록 및 Sentry 전송)
     """
     sentry_sdk.capture_exception(exc)
-    return JSONResponse(
-        status_code=500,
-        content={
-            "error": {
-                "code": "INTERNAL_ERROR",
-                "message": "내부 서버 오류가 발생했습니다.",
-                "detail": None,
-            },
-        },
-    )
+    trace_id = structlog.contextvars.get_contextvars().get("request_id")
+    
+    content = {
+        "statusCode": 500,
+        "message": "내부 서버 오류가 발생했습니다.",
+        "error": "INTERNAL_ERROR",
+        "path": request.url.path,
+        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "traceId": trace_id
+    }
+    
+    # 개발 환경에서만 시스템 스택 트레이스 노출
+    if settings.APP_ENV in ("local", "development"):
+        content["stack"] = traceback.format_exc()
+        
+    return JSONResponse(status_code=500, content=content)
+
+
+async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    """FastAPI의 RequestValidationError를 400(Bad Request) 응답으로 변환합니다."""
+    trace_id = structlog.contextvars.get_contextvars().get("request_id")
+    
+    errors = exc.errors()
+    message = "잘못된 요청 형식입니다. 필수 파라미터를 확인해주세요."
+    if errors:
+        loc = " -> ".join([str(x) for x in errors[0].get("loc", [])])
+        message = f"입력 검증 실패: {errors[0].get('msg')} (위치: {loc})"
+
+    content = {
+        "statusCode": 400,
+        "message": message,
+        "error": "BAD_REQUEST",
+        "path": request.url.path,
+        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "traceId": trace_id
+    }
+    
+    if settings.APP_ENV in ("local", "development"):
+        content["stack"] = str(errors)
+        
+    return JSONResponse(status_code=400, content=content)
+
+
+async def http_exception_handler(request: Request, exc: StarletteHTTPException) -> JSONResponse:
+    """Starlette의 HTTPException(예: 404, 405)을 규격에 맞게 변환합니다."""
+    trace_id = structlog.contextvars.get_contextvars().get("request_id")
+    
+    # 404 Not Found 등에 대한 기본 에러 코드 매핑
+    error_code_map = {
+        404: "NOT_FOUND",
+        405: "METHOD_NOT_ALLOWED"
+    }
+    error_code = error_code_map.get(exc.status_code, "HTTP_EXCEPTION")
+    
+    content = {
+        "statusCode": exc.status_code,
+        "message": str(exc.detail),
+        "error": error_code,
+        "path": request.url.path,
+        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "traceId": trace_id
+    }
+    
+    return JSONResponse(status_code=exc.status_code, content=content)

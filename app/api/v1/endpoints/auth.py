@@ -30,9 +30,11 @@ from app.services.auth import auth_service
 from app.services.oidc.factory import get_oidc_provider
 from app.utils.exceptions import BadRequest, Unauthorized, Forbidden
 
+from app.utils.routing import AutoWrapRouter
+
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/auth", tags=["Authentication"])
+router = AutoWrapRouter(prefix="/auth", tags=["Authentication"])
 
 
 def generate_pkce() -> tuple[str, str]:

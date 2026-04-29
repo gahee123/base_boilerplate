@@ -15,7 +15,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.v1.router import api_v1_router
 from app.core.config import settings
 from app.core.redis import close_redis, get_redis, init_redis
-from app.utils.exceptions import AppException, app_exception_handler, unhandled_exception_handler
+from app.utils.exceptions import (
+    AppException,
+    app_exception_handler,
+    http_exception_handler,
+    unhandled_exception_handler,
+    validation_exception_handler,
+)
+from fastapi.exceptions import RequestValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from app.utils.logging import RequestIDMiddleware, setup_logging
 from app.utils.rate_limit import RateLimitMiddleware
 
@@ -126,6 +134,8 @@ app.add_middleware(
 )
 
 # ── 예외 핸들러 등록 ────────────────────────────────────────
+app.add_exception_handler(RequestValidationError, validation_exception_handler)
+app.add_exception_handler(StarletteHTTPException, http_exception_handler)
 app.add_exception_handler(AppException, app_exception_handler)  # type: ignore[arg-type]
 app.add_exception_handler(Exception, unhandled_exception_handler)  # type: ignore[arg-type]
 

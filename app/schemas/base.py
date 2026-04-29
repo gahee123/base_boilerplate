@@ -7,11 +7,19 @@ app/schemas/base.py
 Pydantic v2 패턴(ConfigDict)을 사용합니다.
 """
 import math
+from datetime import datetime, timezone
 from typing import Generic, TypeVar
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 T = TypeVar("T")
+
+
+class SuccessResponse(BaseModel, Generic[T]):
+    """표준 성공 응답 래퍼"""
+    success: bool = True
+    data: T
+    timestamp: str = Field(default_factory=lambda: datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
 
 
 class BaseSchema(BaseModel):

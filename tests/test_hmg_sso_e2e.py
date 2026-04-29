@@ -75,8 +75,9 @@ async def test_hmg_sso_full_flow_success(client: AsyncClient, db_session: AsyncS
             token_resp = await client.post("/api/v1/auth/token", json={"code": auth_code})
             assert token_resp.status_code == 201
             data = token_resp.json()
-            assert "access_token" in data
-            assert data["expires_in"] == 300
+            assert data["success"] is True
+            assert "access_token" in data["data"]
+            assert data["data"]["expires_in"] == 300
             assert "refresh_token" in token_resp.cookies
 
 @pytest.mark.asyncio
@@ -97,7 +98,9 @@ async def test_hmg_sso_refresh_and_logout(client: AsyncClient, db_session: Async
     # 2. 토큰 갱신 테스트
     refresh_resp = await client.post("/api/v1/auth/refresh")
     assert refresh_resp.status_code == 200
-    assert "access_token" in refresh_resp.json()
+    response_data = refresh_resp.json()
+    assert response_data["success"] is True
+    assert "access_token" in response_data["data"]
     assert "refresh_token" in refresh_resp.cookies # 쿠키 갱신 확인
 
     # 3. 로그아웃 테스트
