@@ -4,7 +4,7 @@ app/services/superset.py
 Apache Superset REST API 연동 및 JIT(Just-In-Time) 유저 관리 서비스.
 """
 import logging
-from typing import Any, dict, Optional
+from typing import Any, Optional
 
 import httpx
 

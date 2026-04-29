@@ -6,8 +6,8 @@ app/models/user_dashboard.py
 from sqlalchemy import ForeignKey, Integer, String, Boolean
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.core.database import Base
-from app.models.audit_log import AuditableMixin
+from app.models.base import Base
+from app.core.audit import AuditableMixin
 
 
 class UserDashboard(Base, AuditableMixin):

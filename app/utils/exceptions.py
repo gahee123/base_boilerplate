@@ -85,6 +85,14 @@ class RateLimitExceeded(AppException):
     message = "요청 횟수가 초과되었습니다. 잠시 후 다시 시도해주세요."
 
 
+class InternalServerError(AppException):
+    """500 — 내부 서버 오류."""
+
+    status_code = 500
+    error_code = "INTERNAL_ERROR"
+    message = "내부 서버 오류가 발생했습니다."
+
+
 # ── Global Exception Handlers ──────────────────────────────
 async def app_exception_handler(request: Request, exc: AppException) -> JSONResponse:
     """AppException 계열 예외를 일관된 JSON으로 변환합니다."""

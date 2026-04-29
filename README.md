@@ -60,7 +60,7 @@ make up
 
 ### 3. 접속 정보
 *   **API Docs**: [http://localhost:8000/docs](http://localhost:8000/docs)
-*   **Health Check**: [http://localhost:8000/api/v1/system/health](http://localhost:8000/api/v1/system/health)
+*   **Health Check**: [http://localhost:8000/healthz/ready](http://localhost:8000/healthz/ready)
 
 ---
 
