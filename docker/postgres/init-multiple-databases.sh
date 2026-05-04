@@ -12,7 +12,3 @@ function create_user_and_database() {
 EOSQL
 }
 
-# KEYCLOAK_DB_NAME 환경 변수가 있으면 해당 DB 생성
-if [ -n "${KEYCLOAK_DB_NAME:-}" ]; then
-	create_user_and_database "$KEYCLOAK_DB_NAME"
-fi

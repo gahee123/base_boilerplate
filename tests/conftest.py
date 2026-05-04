@@ -26,9 +26,9 @@ from app.models.base import Base
 from app.models.user import User, UserRole
 
 
-@pytest.fixture(scope="session", autouse=True)
+@pytest.fixture(autouse=True)
 async def redis_setup():
-    """테스트 세션 동안 Redis 커넥션을 관리합니다."""
+    """각 테스트마다 Redis 커넥션을 초기화합니다."""
     await init_redis()
     yield
     await close_redis()
@@ -84,11 +84,15 @@ async def db_session(engine) -> AsyncGenerator[AsyncSession, None]:
 @pytest.fixture
 async def client(db_session) -> AsyncGenerator[AsyncClient, None]:
     """FastAPI 테스트를 위한 비동기 httpx 클라이언트.
-    
+
     app의 get_db 의존성을 테스트용 db_session으로 교체(override)합니다.
+    async generator 방식으로 override해야 FastAPI가 세션 라이프사이클을
+    올바르게 관리합니다 (트랜잭션 충돌 방지).
     """
-    # 의존성 교체 설정
-    app.dependency_overrides[get_db] = lambda: db_session
+    async def override_get_db():
+        yield db_session
+
+    app.dependency_overrides[get_db] = override_get_db
 
     async with AsyncClient(
         transport=ASGITransport(app=app),
@@ -96,7 +100,6 @@ async def client(db_session) -> AsyncGenerator[AsyncClient, None]:
     ) as ac:
         yield ac
 
-    # 의존성 교체 초기화
     app.dependency_overrides.clear()
 
 

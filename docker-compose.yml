@@ -61,7 +61,6 @@ services:
       POSTGRES_USER: ${DB_USER:-postgres}
       POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
       POSTGRES_DB: ${DB_NAME:-app_db}
-      KEYCLOAK_DB_NAME: keycloak
     ports:
       - "${DB_PORT:-5432}:5432"
     volumes:
@@ -125,30 +124,6 @@ services:
       - loki
     restart: unless-stopped
 
-  # ── Keycloak SSO ────────────────────────────────────────────
-  keycloak:
-    image: quay.io/keycloak/keycloak:24.0.2
-    container_name: fastapi-keycloak
-    command: start-dev --http-relative-path /auth
-    environment:
-      KC_DB: postgres
-      KC_DB_URL_HOST: db
-      KC_DB_URL_DATABASE: keycloak
-      KC_DB_USERNAME: ${DB_USER:-postgres}
-      KC_DB_PASSWORD: ${DB_PASSWORD:-postgres}
-      KEYCLOAK_ADMIN: admin
-      KEYCLOAK_ADMIN_PASSWORD: admin
-      KC_HEALTH_ENABLED: "true"
-      KC_METRICS_ENABLED: "true"
-      KC_HOSTNAME_STRICT: "false"
-      KC_HOSTNAME_STRICT_BACKCHANNEL: "false"
-    ports:
-      - "8081:8080"
-    depends_on:
-      db:
-        condition: service_healthy
-    restart: unless-stopped
-    
   # ── Mock HMG SSO (Test Only) ──────────────────────────────
   mock-sso:
     build:

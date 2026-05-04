@@ -30,6 +30,8 @@ class Settings(BaseSettings):
     APP_DEBUG: bool = True
     APP_HOST: str = "0.0.0.0"
     APP_PORT: int = 8000
+    FRONTEND_URL: str = "http://localhost:3000"
+    BACKEND_URL: str = "http://localhost:8000"
 
     # ── Database (PostgreSQL) ────────────────────────────────
     DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/app_db"
@@ -40,7 +42,8 @@ class Settings(BaseSettings):
     ARQ_JOB_TIMEOUT: int = 60
 
     # ── JWT Authentication ───────────────────────────────────
-    JWT_SECRET_KEY: str = "CHANGE-THIS-IN-PRODUCTION-USE-LONG-RANDOM-STRING"
+    ACCESS_TOKEN_SECRET_KEY: str = "CHANGE-THIS-ACCESS-KEY-USE-LONG-RANDOM-STRING"
+    REFRESH_TOKEN_SECRET_KEY: str = "CHANGE-THIS-REFRESH-KEY-USE-LONG-RANDOM-STRING"
     JWT_ALGORITHM: str = "HS256"
     JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 5  # 5분 (보안 강화)
     JWT_REFRESH_TOKEN_EXPIRE_DAYS: int = 7

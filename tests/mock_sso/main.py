@@ -15,7 +15,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 import sys
 import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
-from app.utils.sso.crypto import hmg_crypto
+from app.services.auth.sso.crypto import hmg_crypto
 
 app = FastAPI(title="Mock HMG SSO Server")
 
@@ -64,7 +64,7 @@ async def healthcheck(request: Request):
         data = json.loads(body)
         
         # 1. 요청 데이터 복호화 시도 (무결성 검증)
-        decrypted = hmg_crypto.decrypt_payload(data["str"], data["iv"])
+        decrypted = json.loads(hmg_crypto.decrypt(data["str"], data["iv"]))
         print(f"[Mock SSO] Healthcheck Decrypted: {decrypted}")
         
         # [추가] 검증 로직: site가 'INVALID'면 실패 응답
@@ -116,7 +116,7 @@ async def token(request: Request):
         }
         
         # userinfo를 AES-GCM으로 암호화
-        info_enc, iv_enc = hmg_crypto.encrypt_payload(user_info_dto)
+        info_enc, iv_enc = hmg_crypto.encrypt(json.dumps(user_info_dto))
         
         # JWT 페이로드 (ProdJwtUtil 호환)
         now = int(time.time())

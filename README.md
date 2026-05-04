@@ -22,7 +22,7 @@
 ## 🌟 핵심 기능 (Key Features)
 
 ### 🔐 인증 및 보안 (Enterprise Auth)
-*   **HMG SSO (prod) & Keycloak (dev)**: 실제 동작이 검증된 HMG 전용 프로토콜(AES-GCM/RS256) 연동 및 로컬 개발용 Keycloak 연동 완료.
+*   **HMG SSO**: 실제 동작이 검증된 HMG 전용 프로토콜(AES-GCM/RS256 + PKCE) 연동 완료.
 *   **5단계 RBAC**: `superadmin`부터 `initial_lock`까지 세분화된 권한 제어 엔진.
 *   **외부 시스템 인증**: 외부 시스템 호출을 위한 전용 API Key(Access/Secret) 발급 및 HMAC 서명 검증 체계.
 
