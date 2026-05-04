@@ -68,10 +68,9 @@ make up
 
 프로젝트의 상세 사양은 새로 정리된 `docs` 폴더를 참조하세요.
 
-*   [🛡️ 기능 감사 리포트 (달성도)](./docs/06_docs/feature_audit_report.md) **(현재는 없음)**
-*   [🔐 HMG SSO 검증 가이드](./docs/03_development/hmg_sso_verification_guide.md) **(현재는 없음)**
-*   [📊 로깅 아키텍처 설계](./docs/02_design/logging_architecture_plan.md) **(현재는 없음)**
-*   [🔧 유틸리티 구현 보고서](./docs/03_development/phase4_utils_report.md) **(현재는 없음)**
+*   [🛡️ 기능 감사 리포트 (달성도)](./docs/06_docs/feature_audit_report.md)
+*   [✅ HMG SSO 검증 가이드](./docs/05_qa/hmg_sso_verification_guide.md)
+*   [📊 로깅 아키텍처 설계](./docs/02_design/logging_architecture_plan.md)
 
 ---
 
